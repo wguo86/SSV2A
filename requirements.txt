@@ -1,0 +1,16 @@
+audioldm==0.1.1
+audioldm2==0.1.0
+clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1
+dalle2-pytorch==1.1.0 # need this to accomodate the pretrained DALLE2 prior from LAION
+frechet_audio_distance==0.3.1
+laion_clap==1.1.6 # you must have this version, instead of 1.1.5 required by frechet-audio-distance
+librosa==0.9.2
+numpy==1.23.5
+scikit-video==1.1.11
+torch==2.4.1
+torchaudio==2.4.1
+torchvision==0.19.1
+ultralytics==8.2.90
+wandb==0.17.9
+wav2clip==0.1.0
+kneed==0.8.5
