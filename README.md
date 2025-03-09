@@ -72,7 +72,7 @@ Replace the arguments with the actual path names on your machine.
 SSV2A accepts multimodal conditions where you describe sound sources as image, text, or audio.
 
 You need to download the DALLE-2 Prior module first in order to close the modality gap of text conditions in CLIP. 
-We recommand [this version pretrained by LAION](https://huggingface.co/laion/DALLE2-PyTorch). 
+We recommend [this version pretrained by LAION](https://huggingface.co/laion/DALLE2-PyTorch). 
 You can also download from [our drive](https://drive.google.com/drive/folders/17SAuZ2sZrTYf21BiNKhRsEfdj-fbeQQN?usp=sharing):
 
 | Item               | File |
