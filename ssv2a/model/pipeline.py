@@ -8,12 +8,13 @@ from shutil import rmtree
 import numpy as np
 import torch
 import torch.nn as nn
-from pyarrow.types import duration
 from tqdm import tqdm
+import soundfile as sf
 
 from ssv2a.data.detect import detect
 from ssv2a.data.tpairs import tpairs2tclips
-from ssv2a.data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames
+from ssv2a.data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames, \
+    prior_embed_texts
 from ssv2a.model.aggregator import Aggregator
 from ssv2a.model.clap import clap_embed_auds
 from ssv2a.model.aldm import build_audioldm, emb_to_audio
@@ -358,4 +359,89 @@ def audio_to_audio(aud_dir, save_dir, aldm_version='audioldm-s-full-v2', batchsi
     waveform = emb_to_audio(model, claps, batchsize=batchsize)
     fns = [os.path.basename(f).replace('*.wav', '') for f in auds]
     save_wave(waveform, save_dir, name=fns)
+
+
+# generate audio from multimodal conditions
+@torch.no_grad()
+def srcs_to_audio(srcs, save_dir,
+                  config=None, pretrained=None,
+                  dalle2_cfg='', dalle2_ckpt='',
+                  shuffle_remix=True, cycle_its=3, cycle_samples=16,
+                  var_samples=1, batch_size=64, seed=42, duration=10, device='cuda'):
+    set_seed(seed)
+    with open(config, 'r') as fp:
+        config = json.load(fp)
+
+    # CLIP embeds
+    img_ks = list(srcs['image'].keys())
+    if img_ks:
+        embs = clip_embed_images(img_ks, version='ViT-L/14', batch_size=batch_size, device=device).detach().cpu().numpy()
+        for k, img_k in enumerate(img_ks):
+            srcs['image'][img_k] = [None, embs[k]]
+
+    # DALLE2 Prior embeds
+    text_ks = list(srcs['text'].keys())
+    if text_ks:
+        embs = prior_embed_texts(text_ks, cfg=dalle2_cfg, ckpt=dalle2_ckpt, bs=batch_size,
+                                 n_samples_per_batch=2, cond_scale=1, device=device)
+        embs = embs.detach().cpu().numpy()
+        for k, text_k in enumerate(text_ks):
+            srcs['text'][text_k] = [None, embs[k]]
+
+    # CLAP embeds
+    aud_ks = list(srcs['audio'].keys())
+    if aud_ks:
+        embs = clap_embed_auds(aud_ks, clap_version='audioldm-s-full-v2', device=device).detach().cpu().numpy()
+        for k, aud_k in enumerate(aud_ks):
+            srcs['audio'][aud_k] = [None, embs[k]]
+
+    model = Pipeline(copy.deepcopy(config), pretrained, device)
+    model.eval()
+    # manifold embeds
+    for mod in ['image', 'text', 'audio']:
+        ks = list(srcs[mod].keys())
+        if ks:
+            embs = np.stack([srcs[mod][k][1] for k in ks])
+            for ks_s in range(0, len(ks), batch_size):
+                ks_e = min(len(ks), ks_s + batch_size)
+                bembs = torch.from_numpy(embs[ks_s:ks_e]).to(device)
+                if mod == 'audio':
+                    bembs = model.manifold.fold_claps(bembs, var_samples=var_samples, normalize=False)
+                else:
+                    bembs = model.manifold.fold_clips(bembs, var_samples=var_samples, normalize=False)
+                bembs = bembs.detach().cpu().numpy()
+                for z, k in enumerate(ks[ks_s:ks_e]):
+                    srcs[mod][k][0] = bembs[z]
+
+    # assemble remixer input
+    rm_src = torch.zeros(model.remixer.slot, model.fold_dim)
+    rm_clip = torch.zeros(model.remixer.slot, model.clip_dim)
+
+    stepper = 1  # reserve first row for global condition (empty)
+    for mod in srcs:
+        for k in srcs[mod]:
+            rm_src[stepper, ...] = torch.from_numpy(srcs[mod][k][0])
+            if mod == 'audio':
+                continue
+            else:
+                rm_clip[stepper, ...] = torch.from_numpy(srcs[mod][k][1])
+            stepper += 1
+
+    rm_src = rm_src.unsqueeze(0).float().to(device)
+    rm_clip = rm_clip.unsqueeze(0).float().to(device)
+
+    # remix!
+    remix_clap = model.cycle_mix(rm_clip, fixed_src=rm_src,
+                                 its=cycle_its, var_samples=var_samples,
+                                 samples=cycle_samples, shuffle=shuffle_remix)
+
+    del model, rm_src, rm_clip, embs
+
+    # AudioLDM
+    audioldm_v = config['audioldm_version']
+    model = build_audioldm(model_name=audioldm_v, device=device)
+    waveform = emb_to_audio(model, remix_clap, batchsize=batch_size, duration=duration)
+
+    # I/O
+    sf.write(save_dir, waveform[0, 0], samplerate=16000)
 
